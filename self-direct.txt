@@ -1,0 +1,5 @@
+payload:
+  # > clash 直连地址配置
+  - DOMAIN-SUFFIX,4ksj.com
+  - DOMAIN-SUFFIX,newzmz.com
+  - DOMAIN-SUFFIX,asus.com
