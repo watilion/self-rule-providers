@@ -3,3 +3,5 @@ payload:
   - DOMAIN-SUFFIX,4ksj.com
   - DOMAIN-SUFFIX,newzmz.com
   - DOMAIN-SUFFIX,asus.com
+  - DOMAIN-SUFFIX,watilion.top
+  - DOMAIN-SUFFIX,leikl.com
