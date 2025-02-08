@@ -6,3 +6,4 @@ payload:
   - DOMAIN-SUFFIX,watilion.top
   - DOMAIN-SUFFIX,leikl.com
   - DOMAIN-SUFFIX,ruijie.com.cn
+  - DOMAIN-SUFFIX,deepseek.com
