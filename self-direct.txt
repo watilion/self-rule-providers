@@ -9,3 +9,4 @@ payload:
   - DOMAIN-SUFFIX,deepseek.com
   - DOMAIN-SUFFIX,www.test-ipv6.com
   - DOMAIN-SUFFIX,icorplens.com
+  - IP-CIDR,34.124.191.123/32
