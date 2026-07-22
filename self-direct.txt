@@ -11,3 +11,4 @@ payload:
   - DOMAIN-SUFFIX,icorplens.com
   - DOMAIN-SUFFIX,evomap.ai
   - IP-CIDR,34.124.191.123/32
+  - IP-CIDR,123.157.217.151/32
