@@ -6,6 +6,12 @@ on:
     - cron: '0 */6 * * *'
   # 支持手动触发
   workflow_dispatch:
+    inputs:
+      force:
+        description: '强制发布 release(即使没有变更)'
+        required: false
+        default: 'false'
+        type: boolean
   # 仓库内文件变更时也触发
   push:
     branches: [main]
@@ -175,7 +181,7 @@ jobs:
       # 而是原样发布,供 mihomo runtime 作为远程 rule-provider URL 使用
       # (runtime 会自动编译为 MRS)。
       - name: Convert sources to mrs
-        if: steps.detect.outputs.has_changes == 'true'
+        if: steps.detect.outputs.has_changes == 'true' || github.event.inputs.force == 'true'
         run: |
           mkdir -p release
 
@@ -214,7 +220,7 @@ jobs:
 
       # 生成 release notes
       - name: Generate release notes
-        if: steps.detect.outputs.has_changes == 'true'
+        if: steps.detect.outputs.has_changes == 'true' || github.event.inputs.force == 'true'
         run: |
           {
             echo "## Updated Rulesets"
@@ -235,7 +241,11 @@ jobs:
             echo "### Changes in this run"
             echo ""
             echo '```'
-            echo "${{ steps.detect.outputs.changed }}"
+            if [ "${{ github.event.inputs.force }}" = "true" ]; then
+              echo "Manual force publish (workflow_dispatch with force=true)"
+            else
+              echo "${{ steps.detect.outputs.changed }}"
+            fi
             echo '```'
             echo ""
             echo "### Files"
@@ -248,7 +258,7 @@ jobs:
 
       # 准备 release 待发布文件列表
       - name: Prepare release files list
-        if: steps.detect.outputs.has_changes == 'true'
+        if: steps.detect.outputs.has_changes == 'true' || github.event.inputs.force == 'true'
         id: files
         run: |
           {
@@ -262,7 +272,7 @@ jobs:
 
       # 创建/更新 release
       - name: Publish release
-        if: steps.detect.outputs.has_changes == 'true'
+        if: steps.detect.outputs.has_changes == 'true' || github.event.inputs.force == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ruleset-latest
