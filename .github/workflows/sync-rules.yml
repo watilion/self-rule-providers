@@ -71,22 +71,28 @@ jobs:
       # 下载 mihomo 二进制(用于 convert-ruleset)
       - name: Download mihomo
         run: |
-          echo "Fetching latest mihomo release info..."
-          ASSET_URL=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | \
-            jq -r '.assets[] | select(.name == "mihomo-linux-amd64-v3.gz") | .browser_download_url')
-          if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
-            echo "v3 build not found, falling back to compatible build..."
-            ASSET_URL=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | \
-              jq -r '.assets[] | select(.name == "mihomo-linux-amd64-compatible.gz") | .browser_download_url')
-          fi
-          if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
-            echo "::error::Cannot find mihomo linux asset"
+          TAG=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | jq -r '.tag_name')
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "::error::Failed to fetch mihomo latest release tag"
             exit 1
           fi
-          echo "Downloading: $ASSET_URL"
-          curl -sSL "$ASSET_URL" -o mihomo.gz
+          echo "Latest mihomo tag: $TAG"
+
+          # asset 命名格式: mihomo-linux-amd64-{v3|compatible}-${TAG}.gz
+          # 直接用 tag 拼 URL,比匹配 asset 名更稳
+          ASSET_URL="https://github.com/MetaCubeX/mihomo/releases/download/${TAG}/mihomo-linux-amd64-v3-${TAG}.gz"
+          echo "Trying v3: $ASSET_URL"
+          if ! curl -sSL --fail --retry 2 -o mihomo.gz "$ASSET_URL"; then
+            echo "v3 build unavailable, falling back to compatible build..."
+            ASSET_URL="https://github.com/MetaCubeX/mihomo/releases/download/${TAG}/mihomo-linux-amd64-compatible-${TAG}.gz"
+            if ! curl -sSL --fail --retry 2 -o mihomo.gz "$ASSET_URL"; then
+              echo "::error::Cannot find mihomo linux asset (tried v3 and compatible)"
+              exit 1
+            fi
+          fi
           gunzip -f mihomo.gz
           chmod +x mihomo
+          echo "Mihomo version:"
           ./mihomo -v
 
       # 检测每个上游规则是否有变更(SHA256 对比)
