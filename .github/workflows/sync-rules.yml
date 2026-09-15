@@ -169,6 +169,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # 使用 mihomo convert-ruleset 将源文件转换为 mrs
+      # 注意: mihomo convert-ruleset 的 classical behavior 在多个版本(v1.18.x / v1.19.x)
+      # 都有 CLI bug (rules/provider/mrs_converter.go:16 传 nil 给 NewClassicalStrategy
+      # 导致 nil pointer panic)。self-direct.txt 是 classical yaml,所以不在这转换,
+      # 而是原样发布,供 mihomo runtime 作为远程 rule-provider URL 使用
+      # (runtime 会自动编译为 MRS)。
       - name: Convert sources to mrs
         if: steps.detect.outputs.has_changes == 'true'
         run: |
@@ -186,13 +191,6 @@ jobs:
               ls -la "release/${name}.mrs"
             fi
           done
-
-          # 转换 self-direct.txt (classical yaml 格式)
-          if [ -f "self-direct.txt" ]; then
-            echo "Converting self-direct (behavior=classical, format=yaml)..."
-            ./mihomo convert-ruleset classical yaml self-direct.txt release/self-direct.mrs
-            ls -la release/self-direct.mrs
-          fi
 
           echo ""
           echo "All generated .mrs files:"
