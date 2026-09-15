@@ -1,0 +1,14 @@
+[
+  {
+    "name": "Loyalsoldier-direct",
+    "url": "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt",
+    "behavior": "domain",
+    "format": "yaml"
+  },
+  {
+    "name": "Loyalsoldier-reject",
+    "url": "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt",
+    "behavior": "domain",
+    "format": "yaml"
+  }
+]

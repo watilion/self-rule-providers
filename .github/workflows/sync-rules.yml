@@ -1,0 +1,273 @@
+name: Sync Upstream Rules
+
+on:
+  # 每 6 小时自动检查上游规则变更
+  schedule:
+    - cron: '0 */6 * * *'
+  # 支持手动触发
+  workflow_dispatch:
+  # 仓库内文件变更时也触发
+  push:
+    branches: [main]
+    paths:
+      - 'self-direct.txt'
+      - '.github/upstreams.json'
+      - '.github/workflows/sync-rules.yml'
+
+permissions:
+  contents: write
+
+# 取消旧运行，避免并发更新
+concurrency:
+  group: sync-rules
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync rules and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # 从独立的 cache 分支加载上次的 hash 缓存
+      - name: Load hash cache from cache branch
+        run: |
+          mkdir -p .cache
+          git fetch origin cache --depth=1 2>&1 || echo "no cache branch yet"
+          if git checkout origin/cache -- .cache/ 2>/dev/null; then
+            echo "Loaded cache from cache branch"
+          else
+            echo "No previous cache, starting fresh"
+          fi
+          echo "Cache contents:"
+          ls -la .cache/ 2>/dev/null || true
+
+      # 加载上游规则配置(优先使用仓库内配置,否则使用默认)
+      - name: Load upstreams config
+        run: |
+          if [ -f .github/upstreams.json ]; then
+            cp .github/upstreams.json upstreams.json
+          else
+            cat > upstreams.json << 'EOF'
+          [
+            {"name": "Loyalsoldier-direct", "url": "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt", "behavior": "domain", "format": "yaml"},
+            {"name": "Loyalsoldier-reject", "url": "https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/reject.txt", "behavior": "domain", "format": "yaml"}
+          ]
+          EOF
+          fi
+          echo "Configured upstreams:"
+          cat upstreams.json
+          echo ""
+          echo "Total: $(jq 'length' upstreams.json) source(s)"
+
+      # 下载 mihomo 二进制(用于 convert-ruleset)
+      - name: Download mihomo
+        run: |
+          echo "Fetching latest mihomo release info..."
+          ASSET_URL=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | \
+            jq -r '.assets[] | select(.name == "mihomo-linux-amd64-v3.gz") | .browser_download_url')
+          if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
+            echo "v3 build not found, falling back to compatible build..."
+            ASSET_URL=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | \
+              jq -r '.assets[] | select(.name == "mihomo-linux-amd64-compatible.gz") | .browser_download_url')
+          fi
+          if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
+            echo "::error::Cannot find mihomo linux asset"
+            exit 1
+          fi
+          echo "Downloading: $ASSET_URL"
+          curl -sSL "$ASSET_URL" -o mihomo.gz
+          gunzip -f mihomo.gz
+          chmod +x mihomo
+          ./mihomo -v
+
+      # 检测每个上游规则是否有变更(SHA256 对比)
+      - name: Detect upstream changes
+        id: detect
+        run: |
+          mkdir -p .cache source
+          changed_names=()
+
+          total=$(jq 'length' upstreams.json)
+          echo "Total upstreams: $total"
+
+          for i in $(seq 0 $((total-1))); do
+            name=$(jq -r ".[$i].name" upstreams.json)
+            url=$(jq -r ".[$i].url" upstreams.json)
+            is_local=$(jq -r ".[$i].is_local // false" upstreams.json)
+            echo "Checking: $name <- $url (local: $is_local)"
+
+            if [ "$is_local" = "true" ]; then
+              if [ ! -f "$url" ]; then
+                echo "::warning::Local file $url not found, skipping"
+                continue
+              fi
+              cp "$url" "source/${name}.src"
+            else
+              if ! curl -sSL --fail --retry 3 -o "source/${name}.src" "$url"; then
+                echo "::warning::Failed to download $url, skipping"
+                continue
+              fi
+            fi
+
+            new_hash=$(sha256sum "source/${name}.src" | awk '{print $1}')
+            cache_file=".cache/${name}.sha256"
+            old_hash=""
+            [ -f "$cache_file" ] && old_hash=$(cat "$cache_file")
+
+            if [ "$new_hash" != "$old_hash" ]; then
+              echo "CHANGED: $name (${old_hash:-none} -> $new_hash)"
+              echo "$new_hash" > "$cache_file"
+              changed_names+=("$name")
+            else
+              echo "UNCHANGED: $name"
+            fi
+          done
+
+          # 检测 self-direct.txt 是否有变更
+          if [ -f "self-direct.txt" ]; then
+            new_hash=$(sha256sum "self-direct.txt" | awk '{print $1}')
+            cache_file=".cache/self-direct.sha256"
+            old_hash=""
+            [ -f "$cache_file" ] && old_hash=$(cat "$cache_file")
+            if [ "$new_hash" != "$old_hash" ]; then
+              echo "CHANGED: self-direct (${old_hash:-none} -> $new_hash)"
+              echo "$new_hash" > "$cache_file"
+              changed_names+=("self-direct")
+            else
+              echo "UNCHANGED: self-direct"
+            fi
+          fi
+
+          {
+            if [ ${#changed_names[@]} -gt 0 ]; then
+              echo "has_changes=true"
+              echo "changed_count=${#changed_names[@]}"
+              echo "changed<<EOF"
+              printf '%s\n' "${changed_names[@]}"
+              echo "EOF"
+            else
+              echo "has_changes=false"
+              echo "changed_count=0"
+              echo "changed<<EOF"
+              echo "EOF"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+      # 使用 mihomo convert-ruleset 将源文件转换为 mrs
+      - name: Convert sources to mrs
+        if: steps.detect.outputs.has_changes == 'true'
+        run: |
+          mkdir -p release
+
+          # 转换所有上游规则
+          total=$(jq 'length' upstreams.json)
+          for i in $(seq 0 $((total-1))); do
+            name=$(jq -r ".[$i].name" upstreams.json)
+            behavior=$(jq -r ".[$i].behavior" upstreams.json)
+            format=$(jq -r ".[$i].format" upstreams.json)
+            if [ -f "source/${name}.src" ]; then
+              echo "Converting $name (behavior=$behavior, format=$format)..."
+              ./mihomo convert-ruleset "$behavior" "$format" "source/${name}.src" "release/${name}.mrs"
+              ls -la "release/${name}.mrs"
+            fi
+          done
+
+          # 转换 self-direct.txt (classical yaml 格式)
+          if [ -f "self-direct.txt" ]; then
+            echo "Converting self-direct (behavior=classical, format=yaml)..."
+            ./mihomo convert-ruleset classical yaml self-direct.txt release/self-direct.mrs
+            ls -la release/self-direct.mrs
+          fi
+
+          echo ""
+          echo "All generated .mrs files:"
+          ls -la release/
+
+      # 将 hash 缓存保存到独立的 cache 分支(不影响主分支历史)
+      - name: Save hash cache to cache branch
+        if: always()
+        run: |
+          set -e
+          CURRENT=$(git rev-parse --abbrev-ref HEAD)
+          git checkout -B cache
+          git add -A .cache
+          if git diff --cached --quiet; then
+            echo "No cache changes"
+          else
+            git commit -m "chore(cache): update upstream hash cache [skip ci]"
+            git push origin HEAD:cache --force 2>&1 || git push -u origin HEAD:cache
+          fi
+          git checkout "$CURRENT"
+
+      # 生成 release notes
+      - name: Generate release notes
+        if: steps.detect.outputs.has_changes == 'true'
+        run: |
+          {
+            echo "## Updated Rulesets"
+            echo ""
+            echo "Auto-generated from upstream sources and the user-maintained \`self-direct.txt\`."
+            echo ""
+            echo "### Upstream sources"
+            echo ""
+            echo "| Name | URL |"
+            echo "|------|-----|"
+            total=$(jq 'length' upstreams.json)
+            for i in $(seq 0 $((total-1))); do
+              name=$(jq -r ".[$i].name" upstreams.json)
+              url=$(jq -r ".[$i].url" upstreams.json)
+              echo "| \`${name}\` | $url |"
+            done
+            echo ""
+            echo "### Changes in this run"
+            echo ""
+            echo '```'
+            echo "${{ steps.detect.outputs.changed }}"
+            echo '```'
+            echo ""
+            echo "### Files"
+            echo ""
+            echo "- \`*.mrs\`: Binary rulesets in mihomo format (converted via \`mihomo convert-ruleset\`)"
+            echo "- \`self-direct.txt\`: User-maintained direct rules (yaml payload, classical rules)"
+          } > release-notes.md
+          echo "----- release-notes.md -----"
+          cat release-notes.md
+
+      # 准备 release 待发布文件列表
+      - name: Prepare release files list
+        if: steps.detect.outputs.has_changes == 'true'
+        id: files
+        run: |
+          {
+            echo "files<<EOF"
+            echo "self-direct.txt"
+            for f in release/*.mrs; do
+              [ -e "$f" ] && echo "$f"
+            done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # 创建/更新 release
+      - name: Publish release
+        if: steps.detect.outputs.has_changes == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ruleset-latest
+          name: Latest Ruleset
+          body_path: release-notes.md
+          files: ${{ steps.files.outputs.files }}
+          fail_on_unmatched_files: false
+          overwrite_files: true
+          # 如果 tag 已存在则不报错(因为我们要覆盖同名 tag)
+          replace_tag_name: true
+          # 删除旧的同名 tag
+          delete_unpublished_releases: true
